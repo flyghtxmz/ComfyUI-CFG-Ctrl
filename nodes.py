@@ -264,6 +264,11 @@ class SMCCFGNode:
         m = model.clone()
         state = _SMCState()
 
+        # Capture any CFG function already registered on the model
+        # (e.g. CFGNorm, PerturbedAttentionGuidance, etc.) so we can
+        # compose with it instead of replacing it entirely.
+        existing_cfg_fn = m.model_options.get("sampler_cfg_function")
+
         def cfg_fn(args: dict) -> torch.Tensor:
             cond_pred:   torch.Tensor = args["cond"]
             uncond_pred: torch.Tensor = args["uncond"]
@@ -300,6 +305,15 @@ class SMCCFGNode:
             )
 
             state.e_prev = corrected_e.detach().clone()
+
+            # If another CFG modifier was already on the model (e.g. CFGNorm),
+            # pass it the SMC-corrected cond so it applies its post-processing
+            # (normalization, etc.) on top of our correction.
+            if existing_cfg_fn is not None:
+                modified_args = dict(args)
+                modified_args["cond"] = uncond_pred + corrected_e
+                return existing_cfg_fn(modified_args)
+
             return uncond_pred + w * corrected_e
 
         m.set_model_sampler_cfg_function(cfg_fn)
@@ -410,6 +424,10 @@ class SMCCFGAdvancedNode:
         m = model.clone()
         state = _SMCState()
 
+        # Capture any CFG function already registered on the model
+        # (e.g. CFGNorm) so we can compose with it instead of replacing it.
+        existing_cfg_fn = m.model_options.get("sampler_cfg_function")
+
         def cfg_fn(args: dict) -> torch.Tensor:
             cond_pred:   torch.Tensor = args["cond"]
             uncond_pred: torch.Tensor = args["uncond"]
@@ -462,10 +480,18 @@ class SMCCFGAdvancedNode:
 
                 corrected_e = e_t + u_sw
                 state.e_prev = corrected_e.detach().clone()
+
+                if existing_cfg_fn is not None:
+                    modified_args = dict(args)
+                    modified_args["cond"] = uncond_pred + corrected_e
+                    return existing_cfg_fn(modified_args)
+
                 return uncond_pred + w * corrected_e
 
-            # SMC gated off: fall back to vanilla CFG.
+            # SMC gated off: fall back to existing CFG function or vanilla CFG.
             state.e_prev = e_t.detach().clone()
+            if existing_cfg_fn is not None:
+                return existing_cfg_fn(args)
             return uncond_pred + w * e_t
 
         m.set_model_sampler_cfg_function(cfg_fn)
